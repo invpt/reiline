@@ -93,7 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rng = rand::thread_rng();
     'outer: for tr in 0..trials {
         if tr % (trials / 100) == 0 {
-            eprintln!("{}%", (tr * 100) / trials);
+            eprintln!("{}%", tr / (trials / 100));
         }
 
         let mut state = State {
