@@ -3,7 +3,6 @@ use rand::prelude::*;
 pub struct Layer {
     weights: Vec<f32>,
     biases: Vec<f32>,
-    output: Vec<f32>,
     input_size: usize,
     output_size: usize,
 }
@@ -27,16 +26,16 @@ impl Layer {
         Layer {
             weights,
             biases,
-            output: vec![0.0f32; output_size],
             input_size,
             output_size,
         }
     }
 
-    pub fn run(&mut self, input: &[f32]) {
+    pub fn run(&self, input: &[f32], output: &mut [f32]) {
         assert!(input.len() == self.input_size);
+        assert!(output.len() == self.output_size);
 
-        for (i, activation) in self.output.iter_mut().enumerate() {
+        for (i, activation) in output.iter_mut().enumerate() {
             // the dot product of weights and inputs
             let net_input = input
                 .iter()
@@ -63,6 +62,7 @@ impl Layer {
 
 pub struct Model {
     layers: Vec<Layer>,
+    outputs: Vec<Vec<f32>>,
     input_size: usize,
     output_size: usize,
 }
@@ -72,28 +72,29 @@ impl Model {
         assert!(dimensions.len() > 2);
         assert!(!dimensions.contains(&0));
 
-        let mut layers = Vec::with_capacity(dimensions.len() - 2);
+        let mut layers = Vec::with_capacity(dimensions.len() - 1);
         for i in 1..dimensions.len() {
             layers.push(Layer::new(dimensions[i - 1], dimensions[i]));
         }
 
         Model {
+            outputs: layers.iter().map(|l| vec![0.0; l.output_size]).collect(),
             layers,
             input_size: *dimensions.first().unwrap(),
             output_size: *dimensions.last().unwrap(),
         }
     }
 
-    pub fn infer(&mut self, input: &[f32]) -> Vec<f32> {
+    pub fn infer<'a>(&'a mut self, input: &'a [f32]) -> &'a [f32] {
         assert!(input.len() == self.input_size);
 
         let mut ninput = input;
-        for layer in self.layers.iter_mut() {
-            layer.run(ninput);
-            ninput = &layer.output;
+        for (layer, output) in self.layers.iter_mut().zip(self.outputs.iter_mut()) {
+            layer.run(ninput, output);
+            ninput = output;
         }
 
-        Vec::from(ninput)
+        ninput
     }
 
     pub fn train<'a>(
@@ -125,22 +126,26 @@ impl Model {
             delta.clear();
             for (i, target) in target.iter().enumerate() {
                 // derivative of 1/2 of squared error
-                let dsqe = self.layers.last().unwrap().output[i] - target;
+                let dsqe = self.outputs.last().unwrap()[i] - target;
                 delta.push(dsqe);
             }
 
             for (l, layer) in self.layers.iter().enumerate().rev() {
                 assert!(delta.len() == layer.output_size);
 
-                let prev_layer = if l != 0 { self.layers.get(l - 1) } else { None };
+                let prev_output = if l != 0 {
+                    self.outputs.get(l - 1)
+                } else {
+                    None
+                };
 
                 // weight and bias nudges
                 let wch = &mut desired_changes[l];
                 let bch = &mut bias_changes[l];
                 for i in 0..layer.output_size {
                     for j in 0..layer.input_size {
-                        let v = if let Some(prev_layer) = prev_layer {
-                            prev_layer.output[j]
+                        let v = if let Some(prev_output) = prev_output {
+                            prev_output[j]
                         } else {
                             input[j]
                         };
@@ -152,10 +157,10 @@ impl Model {
                 }
 
                 // calculate prev layer's error (it's the next one we'll be visiting)
-                if let Some(prev_layer) = prev_layer {
+                if let Some(prev_output) = prev_output {
                     delta_next.reserve(layer.input_size);
-                    for j in 0..layer.input_size {
-                        let total_err = if prev_layer.output[j] > 0.0 {
+                    for (j, prev_output) in prev_output.iter().copied().enumerate() {
+                        let total_err = if prev_output > 0.0 {
                             delta
                                 .iter()
                                 .enumerate()

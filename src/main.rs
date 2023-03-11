@@ -5,13 +5,13 @@ use std::{
     io::{BufWriter, Write},
 };
 
-use nn::Model;
+use supnn::Model;
 use rand::prelude::*;
 
 use crate::bitset::BitSet;
 
 mod bitset;
-mod nn;
+mod supnn;
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 struct State<'a> {
