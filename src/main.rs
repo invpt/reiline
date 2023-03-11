@@ -1,14 +1,17 @@
 use std::{
+    cmp::Ordering,
     collections::{hash_map::Entry, HashMap},
     fs::File,
     io::{BufWriter, Write},
 };
 
+use nn::Model;
 use rand::prelude::*;
 
 use crate::bitset::BitSet;
 
 mod bitset;
+mod nn;
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 struct State<'a> {
@@ -82,12 +85,14 @@ fn transition(state: &mut State, action: &Action) -> bool {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let min_place = 0;
+    let max_place = 20;
     // parameters
-    let places_mapping = (0..6).collect::<Vec<_>>(); // where can things be placed?
-    let pieces_mapping = Vec::from_iter([1, 2, 3]); // what can be placed?
+    let places_mapping = (min_place..max_place).collect::<Vec<_>>(); // where can things be placed?
+    let pieces_mapping = Vec::from_iter([1, 2, 3, 4, 5]); // what can be placed?
     let learn_rate = 0.8; // how fast will the table change based on new trials?
     let future_weight = 0.75; // how much will the future be weighted for each q-value?
-    let trials = 10000; // how many random trials will be run?
+    let trials = 100000; // how many random trials will be run?
 
     let mut qtab = HashMap::<State, HashMap<Action, ActionResult>>::new();
     let mut rng = rand::thread_rng();
@@ -168,6 +173,78 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .as_bytes(),
                 )?;
             }
+        }
+    }
+
+    {
+        let mut cases = Vec::new();
+
+        for (state, actions) in &qtab {
+            let best =
+                actions
+                    .iter()
+                    .max_by(|(_, ActionResult { q: a }), (_, ActionResult { q: b })| {
+                        if a < b {
+                            Ordering::Less
+                        } else if a == b {
+                            Ordering::Equal
+                        } else {
+                            Ordering::Greater
+                        }
+                    });
+
+            if let Some((_, best)) = best {
+                let top = actions
+                    .iter()
+                    .filter(|(_, ActionResult { q })| (q - best.q).abs() <= 1e-10);
+
+                for (action, _) in top {
+                    let mut inp = vec![0.0; places_mapping.len() + pieces_mapping.len()];
+                    let mut out = vec![0.0; places_mapping.len() + pieces_mapping.len()];
+                    for place in places_mapping.iter() {
+                        if !state.places.contains(place) {
+                            inp[*place] = 1.0;
+                        }
+                    }
+
+                    for (i, piece) in pieces_mapping.iter().enumerate() {
+                        if state.pieces.contains(piece) {
+                            inp[places_mapping.len() + i] = 1.0;
+                        }
+                    }
+
+                    for place in places_mapping.iter() {
+                        if *place == action.pos {
+                            out[*place] = 1.0;
+                        }
+                    }
+
+                    for (i, piece) in pieces_mapping.iter().enumerate() {
+                        if *piece == action.piece {
+                            out[places_mapping.len() + i] = 1.0;
+                        }
+                    }
+
+                    cases.push((inp, out));
+                }
+            }
+        }
+
+        let (train, test) = cases.split_at_mut(40000);
+
+        let mut model = Model::new(&[train[0].0.len(), 16, 16, train[0].1.len()]);
+        let mut rng = rand::thread_rng();
+        loop {
+            train.shuffle(&mut rng);
+
+            println!(
+                "inp: {:?}\ninf: {:?}\nact: {:?}",
+                test[0].0,
+                model.infer(&test[0].0),
+                test[0].1
+            );
+
+            model.train(train.iter(), 0.1, 0.0);
         }
     }
 

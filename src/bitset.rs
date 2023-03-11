@@ -60,6 +60,14 @@ impl<'a, T> Ord for BitSet<'a, T> {
 }
 
 impl<'a, T> BitSet<'a, T> {
+    pub fn empty(mapping: &'a [T]) -> BitSet<'a, T> {
+        BitSet {
+            mapping,
+            storage: vec![0; mapping.len() / 8 + if mapping.len() % 8 != 0 { 1 } else { 0 }]
+                .into_boxed_slice(),
+        }
+    }
+
     pub fn all(mapping: &'a [T]) -> BitSet<'a, T> {
         BitSet {
             mapping,
