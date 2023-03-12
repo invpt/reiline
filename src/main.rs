@@ -5,10 +5,12 @@ use std::{
     io::{BufWriter, Write},
 };
 
-use supnn::Model;
 use rand::prelude::*;
 
-use crate::bitset::BitSet;
+use crate::{
+    bitset::BitSet,
+    supnn::{GradientDescentOptimizer, Model},
+};
 
 mod bitset;
 mod supnn;
@@ -196,7 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some((_, best)) = best {
                 let top = actions
                     .iter()
-                    .filter(|(_, ActionResult { q })| (q - best.q).abs() <= 1e-10);
+                    .filter(|(_, ActionResult { q })| (q - best.q).abs() <= 1e-8);
 
                 for (action, _) in top {
                     let mut inp = vec![0.0; places_mapping.len() + pieces_mapping.len()];
@@ -230,7 +232,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        let (train, test) = cases.split_at_mut(40000);
+        let split_pos = 2 * cases.len() / 3;
+        let (train, test) = cases.split_at_mut(split_pos);
 
         let mut model = Model::new(&[train[0].0.len(), 16, 16, train[0].1.len()]);
         let mut rng = rand::thread_rng();
@@ -244,7 +247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 test[0].1
             );
 
-            model.train(train.iter(), 0.00001, 0.01);
+            model.train(train.iter(), GradientDescentOptimizer::new(0.1), 32);
         }
     }
 
