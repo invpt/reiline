@@ -1,5 +1,18 @@
 use rand::prelude::*;
 
+pub trait Optimizer {
+    type OptimizerInstance: OptimizerInstance;
+
+    fn instance(self, n_vars: usize) -> Self::OptimizerInstance;
+}
+
+pub trait OptimizerInstance {
+    fn apply<'a>(&mut self, vars_and_grads: impl Iterator<Item = (&'a mut f32, &'a f32)>);
+}
+
+pub trait StatelessOptimizer: OptimizerInstance {}
+
+#[derive(Debug)]
 pub struct Layer {
     weights: Vec<f32>,
     biases: Vec<f32>,
@@ -14,13 +27,13 @@ impl Layer {
 
         for _ in 0..output_size {
             for _ in 0..input_size {
-                weights.push((source.gen::<u64>() % 100) as f32 / 10000.0)
+                weights.push((source.gen::<u64>() % 100) as f32 / 1000.0)
             }
         }
 
         let mut biases = Vec::with_capacity(output_size);
         for _ in 0..output_size {
-            biases.push((source.gen::<u64>() % 100) as f32 / 500.0)
+            biases.push((source.gen::<u64>() % 100) as f32 / 100000.0)
         }
 
         Layer {
@@ -44,18 +57,6 @@ impl Layer {
                 .sum::<f32>();
             let biased_net_input = net_input + self.biases[i];
             *activation = biased_net_input.max(0.0);
-        }
-    }
-
-    pub fn adjust(&mut self, wg_adj: &[f32], b_adj: &[f32]) {
-        assert!(wg_adj.len() == self.weights.len());
-
-        for i in 0..self.output_size {
-            for j in 0..self.input_size {
-                self.weights[i * self.input_size + j] += wg_adj[i * self.input_size + j]
-            }
-
-            self.biases[i] += b_adj[i]
         }
     }
 }
@@ -100,26 +101,39 @@ impl Model {
     pub fn train<'a>(
         &mut self,
         cases: impl Iterator<Item = &'a (impl AsRef<[f32]> + 'a, impl AsRef<[f32]> + 'a)>,
-        learn_rate: f32,
-        bias_learn_rate: f32,
+        optimizer: impl Optimizer,
+        batch_size: usize,
     ) {
-        let mut desired_changes: Vec<Vec<f32>> = Vec::with_capacity(self.layers.len());
-        let mut bias_changes: Vec<Vec<f32>> = Vec::with_capacity(self.layers.len());
-        for l in 0..self.layers.len() {
-            desired_changes.push(vec![
-                0.0;
-                self.layers[l].output_size * self.layers[l].input_size
-            ]);
-            bias_changes.push(vec![0.0; self.layers[l].output_size]);
-        }
+        let mut optimizer = optimizer.instance(
+            self.layers
+                .iter()
+                .map(|l| l.output_size * l.input_size + l.output_size)
+                .sum(),
+        );
 
-        let mut case_count = 0;
+        // keep track of the gradient over each mini-batch, start it at 0
+        let mut dw = self
+            .layers
+            .iter()
+            .map(|l| vec![0.0; l.output_size * l.input_size])
+            .collect::<Vec<_>>();
+        let mut db = self
+            .layers
+            .iter()
+            .map(|l| vec![0.0; l.output_size])
+            .collect::<Vec<_>>();
+
         // $\delta_j$ from the Wikipedia article on backpropagation
         let mut delta = Vec::with_capacity(self.output_size);
         let mut delta_next = Vec::new();
+
+        // keep track of the number of trials thus far
+        let mut t = 0;
+
         for (input, target) in cases {
             let (input, target): (&[f32], &[f32]) = (input.as_ref(), target.as_ref());
-            case_count += 1;
+
+            t += 1;
 
             self.infer(input);
 
@@ -139,21 +153,17 @@ impl Model {
                     None
                 };
 
-                // weight and bias nudges
-                let wch = &mut desired_changes[l];
-                let bch = &mut bias_changes[l];
+                // calculate gradient
+                let dw = &mut dw[l];
+                let db = &mut db[l];
                 for i in 0..layer.output_size {
                     for j in 0..layer.input_size {
-                        let v = if let Some(prev_output) = prev_output {
-                            prev_output[j]
-                        } else {
-                            input[j]
-                        };
+                        let activation = prev_output.map(|o| o[j]).unwrap_or(input[j]);
 
-                        wch[i * layer.input_size + j] -= learn_rate * delta[i] * v;
+                        dw[i * layer.input_size + j] += delta[i] * activation;
                     }
 
-                    bch[i] -= bias_learn_rate * delta[i]
+                    db[i] += delta[i]
                 }
 
                 // calculate prev layer's error (it's the next one we'll be visiting)
@@ -178,67 +188,131 @@ impl Model {
                 }
             }
 
-            if case_count % 2 != 0 {
+            if t % batch_size != 0 {
                 continue;
             }
 
             // average it
-            for layer_wg_ch in desired_changes.iter_mut() {
-                for wg_ch in layer_wg_ch.iter_mut() {
-                    *wg_ch /= case_count as f32;
-                }
-            }
+            dw.iter_mut()
+                .flat_map(|l| l.iter_mut())
+                .for_each(|dw| *dw /= batch_size as f32);
+            db.iter_mut()
+                .flat_map(|l| l.iter_mut())
+                .for_each(|db| *db /= batch_size as f32);
 
-            for layer_bias_ch in bias_changes.iter_mut() {
-                for bias_ch in layer_bias_ch.iter_mut() {
-                    *bias_ch /= case_count as f32;
-                }
-            }
-
-            for ((layer, wch), bch) in self
+            let x_iter = self
                 .layers
                 .iter_mut()
-                .zip(desired_changes.iter())
-                .zip(bias_changes.iter())
-            {
-                layer.adjust(wch, bch)
-            }
+                .flat_map(|l| l.weights.iter_mut().chain(l.biases.iter_mut()));
+            let dx_iter = dw
+                .iter()
+                .zip(db.iter())
+                .flat_map(|(dw, db)| dw.iter().chain(db.iter()));
+            optimizer.apply(x_iter.zip(dx_iter));
 
-            case_count = 0;
+            // reset weight/bias grads
+            dw.iter_mut()
+                .flat_map(|l| l.iter_mut())
+                .for_each(|dw| *dw = 0.0);
+            db.iter_mut()
+                .flat_map(|l| l.iter_mut())
+                .for_each(|db| *db = 0.0);
+        }
 
-            for layer_wg_ch in desired_changes.iter_mut() {
-                for wg_ch in layer_wg_ch.iter_mut() {
-                    *wg_ch = 0.0;
-                }
-            }
-
-            for layer_bias_ch in bias_changes.iter_mut() {
-                for bias_ch in layer_bias_ch.iter_mut() {
-                    *bias_ch = 0.0;
-                }
-            }
+        // don't re-optimize if we just did
+        if t % batch_size == 0 {
+            return;
         }
 
         // average it
-        for layer_wg_ch in desired_changes.iter_mut() {
-            for wg_ch in layer_wg_ch.iter_mut() {
-                *wg_ch /= case_count as f32;
-            }
-        }
+        dw.iter_mut()
+            .flat_map(|l| l.iter_mut())
+            .for_each(|dw| *dw /= (t % batch_size) as f32);
+        db.iter_mut()
+            .flat_map(|l| l.iter_mut())
+            .for_each(|db| *db /= (t % batch_size) as f32);
 
-        for layer_bias_ch in bias_changes.iter_mut() {
-            for bias_ch in layer_bias_ch.iter_mut() {
-                *bias_ch /= case_count as f32;
-            }
-        }
-
-        for ((layer, wch), bch) in self
+        let x_iter = self
             .layers
             .iter_mut()
-            .zip(desired_changes.iter())
-            .zip(bias_changes.iter())
+            .flat_map(|l| l.weights.iter_mut().chain(l.biases.iter_mut()));
+        let dx_iter = dw
+            .iter()
+            .zip(db.iter())
+            .flat_map(|(dw, db)| dw.iter().chain(db.iter()));
+        optimizer.apply(x_iter.zip(dx_iter));
+    }
+}
+
+impl<T: StatelessOptimizer> Optimizer for T {
+    type OptimizerInstance = Self;
+
+    fn instance(self, _n_vars: usize) -> Self {
+        self
+    }
+}
+
+pub struct GradientDescentOptimizer {
+    a: f32,
+}
+
+impl GradientDescentOptimizer {
+    pub fn new(learn_rate: f32) -> GradientDescentOptimizer {
+        GradientDescentOptimizer { a: learn_rate }
+    }
+}
+
+impl StatelessOptimizer for GradientDescentOptimizer {}
+
+impl OptimizerInstance for GradientDescentOptimizer {
+    fn apply<'a>(&mut self, vars_and_grads: impl Iterator<Item = (&'a mut f32, &'a f32)>) {
+        for (x, dx) in vars_and_grads {
+            *x -= self.a * dx
+        }
+    }
+}
+
+pub struct AdamOptimizer {
+    pub a: f32,
+    pub b1: f32,
+    pub b2: f32,
+}
+
+impl Optimizer for AdamOptimizer {
+    type OptimizerInstance = AdamOptimizerInstance;
+
+    fn instance(self, n_vars: usize) -> Self::OptimizerInstance {
+        AdamOptimizerInstance {
+            cfg: self,
+            t: 0,
+            vdx: vec![0.0; n_vars],
+            sdx: vec![0.0; n_vars],
+        }
+    }
+}
+
+pub struct AdamOptimizerInstance {
+    cfg: AdamOptimizer,
+    t: i32,
+    vdx: Vec<f32>,
+    sdx: Vec<f32>,
+}
+
+impl OptimizerInstance for AdamOptimizerInstance {
+    fn apply<'a>(&mut self, vars_and_grads: impl Iterator<Item = (&'a mut f32, &'a f32)>) {
+        self.t += 1;
+
+        for (((x, dx), vdx), sdx) in vars_and_grads
+            .zip(self.vdx.iter_mut())
+            .zip(self.sdx.iter_mut())
         {
-            layer.adjust(wch, bch)
+            *vdx = self.cfg.b1 * *vdx + (1.0 - self.cfg.b1) * dx;
+            *sdx = self.cfg.b2 * *sdx + (1.0 - self.cfg.b2) * dx * dx;
+
+            let vdx_corr = *vdx / (1.0 - self.cfg.b1.powi(self.t));
+            let sdx_corr = *sdx / (1.0 - self.cfg.b2.powi(self.t));
+
+            *x -= self.cfg.a * vdx_corr / (sdx_corr.sqrt() + 1e-8);
         }
     }
 }
@@ -248,31 +322,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
+    fn approx_sin() {
         let mut x = 0.0f32;
         let mut cases = Vec::new();
         while x < 1.0 {
-            cases.push(([x], [(x * std::f32::consts::TAU).sin()]));
-            x += 0.001;
+            cases.push(([x], [(x * std::f32::consts::TAU).sin() + 1.0]));
+            x += 0.0001;
         }
 
         let mut model = Model::new(&[1, 128, 1]);
         let mut rng = rand::thread_rng();
-        for _ in 0..5 {
+        for _ in 0..10 {
             cases.shuffle(&mut rng);
 
-            let mut x = 0.0;
-            while x < 1.0 {
-                println!(
-                    "{},{}",
-                    x * std::f32::consts::TAU,
-                    model.infer(&[x])[0]
-                );
-                x += 0.1
-            }
-            println!();
+            model.train(
+                cases.iter(),
+                AdamOptimizer {
+                    a: 0.01,
+                    b1: 0.9,
+                    b2: 0.999,
+                },
+                32,
+            );
+        }
 
-            model.train(cases.iter(), 0.001, 0.001);
+        let mut x = 0.0;
+        while x < 1.0 {
+            let abs_diff = ((x * std::f32::consts::TAU).sin() - model.infer(&[x])[0] + 1.0).abs();
+            assert!(abs_diff < 0.1, "the approximation must be accurate");
+            x += 0.01;
         }
     }
 }
