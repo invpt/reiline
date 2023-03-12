@@ -14,13 +14,13 @@ impl Layer {
 
         for _ in 0..output_size {
             for _ in 0..input_size {
-                weights.push((source.gen::<u64>() % 100) as f32 / 1000.0)
+                weights.push((source.gen::<u64>() % 100) as f32 / 10000.0)
             }
         }
 
         let mut biases = Vec::with_capacity(output_size);
         for _ in 0..output_size {
-            biases.push((source.gen::<u64>() % 100) as f32 / 1000000.0)
+            biases.push((source.gen::<u64>() % 100) as f32 / 500.0)
         }
 
         Layer {
@@ -178,7 +178,7 @@ impl Model {
                 }
             }
 
-            if case_count % 30 != 0 {
+            if case_count % 2 != 0 {
                 continue;
             }
 
@@ -252,27 +252,27 @@ mod tests {
         let mut x = 0.0f32;
         let mut cases = Vec::new();
         while x < 1.0 {
-            cases.push(([x], [x * x]));
+            cases.push(([x], [(x * std::f32::consts::TAU).sin()]));
             x += 0.001;
         }
 
         let mut model = Model::new(&[1, 128, 1]);
         let mut rng = rand::thread_rng();
-        loop {
+        for _ in 0..5 {
             cases.shuffle(&mut rng);
 
             let mut x = 0.0;
             while x < 1.0 {
                 println!(
-                    "inp: {:?}\ninf: {:?}\nact: {:?}",
-                    x,
-                    model.infer(&[x])[0],
-                    x * x
+                    "{},{}",
+                    x * std::f32::consts::TAU,
+                    model.infer(&[x])[0]
                 );
                 x += 0.1
             }
+            println!();
 
-            model.train(cases.iter(), 0.05, 0.01);
+            model.train(cases.iter(), 0.001, 0.001);
         }
     }
 }
