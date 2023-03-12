@@ -244,7 +244,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 test[0].1
             );
 
-            model.train(train.iter(), 0.1, 0.0);
+            model.train(train.iter(), 0.00001, 0.01);
         }
     }
 

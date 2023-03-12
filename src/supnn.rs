@@ -1,5 +1,6 @@
 use rand::prelude::*;
 
+#[derive(Debug)]
 pub struct Layer {
     weights: Vec<f32>,
     biases: Vec<f32>,
@@ -14,13 +15,13 @@ impl Layer {
 
         for _ in 0..output_size {
             for _ in 0..input_size {
-                weights.push((source.gen::<u64>() % 100) as f32 / 10000.0)
+                weights.push((source.gen::<u64>() % 100) as f32 / 1000.0)
             }
         }
 
         let mut biases = Vec::with_capacity(output_size);
         for _ in 0..output_size {
-            biases.push((source.gen::<u64>() % 100) as f32 / 500.0)
+            biases.push((source.gen::<u64>() % 100) as f32 / 100000.0)
         }
 
         Layer {
@@ -52,7 +53,7 @@ impl Layer {
 
         for i in 0..self.output_size {
             for j in 0..self.input_size {
-                self.weights[i * self.input_size + j] += wg_adj[i * self.input_size + j]
+                self.weights[i * self.input_size + j] += wg_adj[i * self.input_size + j];
             }
 
             self.biases[i] += b_adj[i]
@@ -103,16 +104,41 @@ impl Model {
         learn_rate: f32,
         bias_learn_rate: f32,
     ) {
+        let b1 = 0.5;
+        let b2 = 0.555;
+        let eps = 1e-8;
+
+        let mut vdw: Vec<Vec<f32>> = Vec::with_capacity(self.layers.len());
+        let mut sdw: Vec<Vec<f32>> = Vec::with_capacity(self.layers.len());
         let mut desired_changes: Vec<Vec<f32>> = Vec::with_capacity(self.layers.len());
+        let mut vdb: Vec<Vec<f32>> = Vec::with_capacity(self.layers.len());
+        let mut sdb: Vec<Vec<f32>> = Vec::with_capacity(self.layers.len());
         let mut bias_changes: Vec<Vec<f32>> = Vec::with_capacity(self.layers.len());
         for l in 0..self.layers.len() {
+            vdw.push(vec![
+                0.0;
+                self.layers[l].output_size * self.layers[l].input_size
+            ]);
+            sdw.push(vec![
+                0.0;
+                self.layers[l].output_size * self.layers[l].input_size
+            ]);
             desired_changes.push(vec![
                 0.0;
                 self.layers[l].output_size * self.layers[l].input_size
             ]);
+            vdb.push(vec![
+                0.0;
+                self.layers[l].output_size
+            ]);
+            sdb.push(vec![
+                0.0;
+                self.layers[l].output_size
+            ]);
             bias_changes.push(vec![0.0; self.layers[l].output_size]);
         }
 
+        let mut t = 0;
         let mut case_count = 0;
         // $\delta_j$ from the Wikipedia article on backpropagation
         let mut delta = Vec::with_capacity(self.output_size);
@@ -120,6 +146,7 @@ impl Model {
         for (input, target) in cases {
             let (input, target): (&[f32], &[f32]) = (input.as_ref(), target.as_ref());
             case_count += 1;
+            t += 1;
 
             self.infer(input);
 
@@ -140,8 +167,8 @@ impl Model {
                 };
 
                 // weight and bias nudges
-                let wch = &mut desired_changes[l];
-                let bch = &mut bias_changes[l];
+                let dw = &mut desired_changes[l];
+                let db = &mut bias_changes[l];
                 for i in 0..layer.output_size {
                     for j in 0..layer.input_size {
                         let v = if let Some(prev_output) = prev_output {
@@ -150,10 +177,10 @@ impl Model {
                             input[j]
                         };
 
-                        wch[i * layer.input_size + j] -= learn_rate * delta[i] * v;
+                        dw[i * layer.input_size + j] += delta[i] * v;
                     }
 
-                    bch[i] -= bias_learn_rate * delta[i]
+                    db[i] += delta[i]
                 }
 
                 // calculate prev layer's error (it's the next one we'll be visiting)
@@ -178,7 +205,7 @@ impl Model {
                 }
             }
 
-            if case_count % 2 != 0 {
+            if case_count % 32 != 0 {
                 continue;
             }
 
@@ -188,12 +215,36 @@ impl Model {
                     *wg_ch /= case_count as f32;
                 }
             }
-
             for layer_bias_ch in bias_changes.iter_mut() {
                 for bias_ch in layer_bias_ch.iter_mut() {
                     *bias_ch /= case_count as f32;
                 }
             }
+
+            for (l, layer) in self.layers.iter().enumerate() {
+                let dw = &mut desired_changes[l];
+                let db = &mut bias_changes[l];
+                for i in 0..layer.output_size {
+                    for j in 0..layer.input_size {
+                        vdw[l][i * layer.input_size + j] = b1 * vdw[l][i * layer.input_size + j] + (1.0 - b1) * dw[i * layer.input_size + j];
+                        sdw[l][i * layer.input_size + j] = b2 * sdw[l][i * layer.input_size + j] + (1.0 - b2) * dw[i * layer.input_size + j] * dw[i * layer.input_size + j];
+                        
+                        let vdw_corrected = vdw[l][i * layer.input_size + j] / (1.0 - b1.powi(t as i32));
+                        let sdw_corrected = sdw[l][i * layer.input_size + j] / (1.0 - b2.powi(t as i32));
+
+                        dw[i * layer.input_size + j] = -learn_rate * vdw_corrected / (sdw_corrected.sqrt() + eps);
+                    }
+
+                    vdb[l][i] = b1 * vdb[l][i] + (1.0 - b1) * db[i];
+                    sdb[l][i] = b2 * sdb[l][i] + (1.0 - b2) * db[i] * db[i];
+                    
+                    let vdb_corrected = vdb[l][i] / (1.0 - b1.powi(t as i32));
+                    let sdb_corrected = sdb[l][i] / (1.0 - b2.powi(t as i32));
+
+                    db[i] = -bias_learn_rate * vdb_corrected / (sdb_corrected.sqrt() + eps);
+                }
+            }
+
 
             for ((layer, wch), bch) in self
                 .layers
@@ -219,6 +270,10 @@ impl Model {
             }
         }
 
+        if case_count == 0 {
+            return
+        }
+
         // average it
         for layer_wg_ch in desired_changes.iter_mut() {
             for wg_ch in layer_wg_ch.iter_mut() {
@@ -229,6 +284,30 @@ impl Model {
         for layer_bias_ch in bias_changes.iter_mut() {
             for bias_ch in layer_bias_ch.iter_mut() {
                 *bias_ch /= case_count as f32;
+            }
+        }
+
+        for (l, layer) in self.layers.iter().enumerate() {
+            let dw = &mut desired_changes[l];
+            let db = &mut bias_changes[l];
+            for i in 0..layer.output_size {
+                for j in 0..layer.input_size {
+                    vdw[l][i * layer.input_size + j] = b1 * vdw[l][i * layer.input_size + j] + (1.0 - b1) * dw[i * layer.input_size + j];
+                    sdw[l][i * layer.input_size + j] = b2 * sdw[l][i * layer.input_size + j] + (1.0 - b2) * dw[i * layer.input_size + j] * dw[i * layer.input_size + j];
+                    
+                    let vdw_corrected = vdw[l][i * layer.input_size + j] / (1.0 - b1.powi(t as i32));
+                    let sdw_corrected = sdw[l][i * layer.input_size + j] / (1.0 - b2.powi(t as i32));
+
+                    dw[i * layer.input_size + j] = -learn_rate * vdw_corrected / (sdw_corrected.sqrt() + eps);
+                }
+
+                vdb[l][i] = b1 * vdb[l][i] + (1.0 - b1) * db[i];
+                sdb[l][i] = b2 * sdb[l][i] + (1.0 - b2) * db[i] * db[i];
+                
+                let vdb_corrected = vdb[l][i] / (1.0 - b1.powi(t as i32));
+                let sdb_corrected = sdb[l][i] / (1.0 - b2.powi(t as i32));
+
+                db[i] = -bias_learn_rate * vdb_corrected / (sdb_corrected.sqrt() + eps);
             }
         }
 
@@ -252,27 +331,27 @@ mod tests {
         let mut x = 0.0f32;
         let mut cases = Vec::new();
         while x < 1.0 {
-            cases.push(([x], [(x * std::f32::consts::TAU).sin()]));
-            x += 0.001;
+            cases.push(([x], [(x*std::f32::consts::TAU).sin() + 1.0]));
+            x += 0.0001;
         }
 
         let mut model = Model::new(&[1, 128, 1]);
         let mut rng = rand::thread_rng();
-        for _ in 0..5 {
+        for _ in 0..1500 {
             cases.shuffle(&mut rng);
 
             let mut x = 0.0;
             while x < 1.0 {
                 println!(
                     "{},{}",
-                    x * std::f32::consts::TAU,
+                    x*std::f32::consts::TAU,
                     model.infer(&[x])[0]
                 );
-                x += 0.1
+                x += 0.01;
             }
             println!();
 
-            model.train(cases.iter(), 0.001, 0.001);
+            model.train(cases.iter(), 0.01, 0.0);
         }
     }
 }
