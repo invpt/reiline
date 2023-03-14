@@ -9,11 +9,11 @@ use rand::prelude::*;
 
 use crate::{
     bitset::BitSet,
-    supnn::{GradientDescentOptimizer, Model},
+    nn::{GradientDescentOptimizer, Model},
 };
 
 mod bitset;
-mod supnn;
+mod nn;
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 struct State<'a> {
@@ -236,6 +236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (train, test) = cases.split_at_mut(split_pos);
 
         let mut model = Model::new(&[train[0].0.len(), 16, 16, train[0].1.len()]);
+        let mut driver = model.driver_mut();
         let mut rng = rand::thread_rng();
         loop {
             train.shuffle(&mut rng);
@@ -243,11 +244,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "inp: {:?}\ninf: {:?}\nact: {:?}",
                 test[0].0,
-                model.infer(&test[0].0),
+                driver.run(&test[0].0).output(),
                 test[0].1
             );
 
-            model.train(train.iter(), GradientDescentOptimizer::new(0.1), 32);
+            driver.train(train.iter(), GradientDescentOptimizer::new(0.1), 32);
         }
     }
 
