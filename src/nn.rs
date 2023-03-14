@@ -136,6 +136,7 @@ where
         &self.model
     }
 
+    /// Gets a mutable reference to the underlying model.
     pub fn model_mut(&mut self) -> &mut Model
     where
         M: DerefMut<Target = Model>,
