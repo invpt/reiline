@@ -131,6 +131,18 @@ impl<M> ModelDriver<M>
 where
     M: Deref<Target = Model>,
 {
+    /// Gets a reference to the underlying model.
+    pub fn model(&self) -> &Model {
+        &self.model
+    }
+
+    pub fn model_mut(&mut self) -> &mut Model
+    where
+        M: DerefMut<Target = Model>,
+    {
+        &mut self.model
+    }
+
     /// Runs the network on the given input.
     pub fn run<'a>(&'a mut self, input: &'a [f32]) -> RunResult<'a> {
         assert!(input.len() == self.model.input_size);
