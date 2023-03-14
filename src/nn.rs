@@ -169,7 +169,7 @@ where
             swap(&mut a, &mut b);
         }
 
-        RunResult { output: a }
+        RunResult { output: &a[..self.model.output_size] }
     }
 
     /// Runs the network on the given input and records the propagation through the network
